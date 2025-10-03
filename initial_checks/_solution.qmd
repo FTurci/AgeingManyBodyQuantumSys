@@ -1,0 +1,160 @@
+# **Solution Sheet: Semi-Elliptic Spectral Function**
+
+**Hamiltonian:**
+
+$$
+\hat{H} = \epsilon\, \hat{s}^\dagger \hat{s} + \sum_k \sqrt{J_k}\, (\hat{b}_k^\dagger \hat{s} + \hat{s}^\dagger \hat{b}_k) + \sum_k \omega_k \hat{b}_k^\dagger \hat{b}_k
+$$
+
+
+### **Step 1: Define the spectral function**
+
+$$
+\boxed{J(\omega) = \sum_k J_k \delta(\omega - \omega_k)}
+$$
+
+* This encodes how the system couples to the bath at frequency $\omega$.
+
+
+### **Step 2: Continuum limit**
+
+Replace the discrete sum by an integral over a density of states $\rho(\omega)$:
+
+$$
+\sum_k J_k \delta(\omega - \omega_k) \to \int d\omega\, \rho(\omega) J(\omega) \quad \implies \quad J(\omega) = \rho(\omega) J(\omega) \text{(continuous)}
+$$
+
+* Here, $\rho(\omega)$ is the density of bath modes.
+
+
+### **Step 3: Chain mapping**
+
+Map the bath to a 1D tight-binding chain (orthogonal polynomial)
+
+$$
+H_B = \sum_n \epsilon_n a_n^\dagger a_n + \sum_n t_n (a_n^\dagger a_{n+1} + a_{n+1}^\dagger a_n)
+$$
+
+* $\hat{s}$ couples only to the first site $a_0$ with coupling $\sqrt{J_0}$.
+* This reduces the problem to a chain with nearest-neighbor hopping.
+
+
+The mapping is down as follows. We start with the Hamiltonian
+
+$$
+\hat{H} = \epsilon\, \hat{s}^\dagger \hat{s} + \sum_k \sqrt{J_k}\, (\hat{b}_k^\dagger \hat{s} + \hat{s}^\dagger \hat{b}_k) + \sum_k \omega_k \hat{b}_k^\dagger \hat{b}_k
+$$
+
+and want to rewrite it as
+
+$$
+\hat{H} = \epsilon\, \hat{s}^\dagger \hat{s} + \sqrt{J_0}(\hat{s}^\dagger \hat{a}_0 + \hat{a}_0^\dagger \hat{s}) + \sum_n \epsilon_n \hat{a}_n^\dagger \hat{a}_n + \sum_n t_n (\hat{a}_n^\dagger \hat{a}_{n+1} + \hat{a}_{n+1}^\dagger \hat{a}_n)
+$$
+
+* **$\hat{a}_n$** are new “chain” operators.
+* The system couples only to the first site.
+* The rest of the bath is now a 1D chain with nearest-neighbor hopping $t_n$.
+
+
+* Define a sequence of **orthogonal polynomials $P_n(\omega)$** with respect to the weight $J(\omega)$:
+
+$$
+\int d\omega\, P_n(\omega) P_m(\omega) J(\omega) = \delta_{nm} \|P_n\|^2
+$$
+
+* Then define new operators:
+
+$$
+\hat{a}_n = \int d\omega\, P_n(\omega) \hat{b}(\omega)
+$$
+
+* **Result:** The bath Hamiltonian in $\hat{a}_n$ becomes **tridiagonal** (nearest-neighbor hopping).
+
+Any sequence of polynomials $\left\{P_n(\omega)\right\}$ orthogonal w.r.t. a positive weight $w(\omega)$ satisfies a **three-term recurrence relation**:
+
+$$
+\omega P_n(\omega)=t_n P_{n+1}(\omega)+\epsilon_n P_n(\omega)+t_{n-1} P_{n-1}(\omega)
+$$
+This is **constant** if
+
+
+$$
+t_n=t \quad \forall n, \quad \epsilon_n=\text { constant }(\text { often } 0)$$
+
+
+### **Step 4: Uniform chain simplification**
+
+
+We **want** the hopping $t_n$ to be uniform (constant), and for simplicity take $\epsilon_n=0$.
+
+Then teh recurrence is 
+
+$$
+\omega P_n(\omega)=t P_{n+1}(\omega)+0 \cdot P_n(\omega)+t P_{n-1}(\omega)
+$$
+
+Which Polynomial satisfy such recurrence? It happens to be the Cheybshev polynomials of the second kind $U_n$ which satisfy:
+
+$$
+x U_n(x)=\frac{1}{2} U_{n+1}(x)+0 \cdot U_n+\frac{1}{2} U_{n-1}(x)
+$$
+
+They are defined as :
+
+$$
+U_n(x) = \frac{\sin[(n+1)\arccos(x)]}{\sin[\arccos(x)]}
+$$
+
+for $x \in [-1, 1]$, and $n = 0, 1, 2, \ldots$
+
+and they are orthogonal with respect to the weight
+
+$$
+w(x) = \sqrt{1 - x^2}
+$$
+
+on the interval $x \in [-1, 1]$:
+
+$$
+\int_{-1}^{1} U_n(x) U_m(x) \sqrt{1 - x^2}\, dx = \frac{\pi}{2} \delta_{nm}
+$$
+
+So, by changing variables suitably to match the interval,  this immediately yields that the density of states for the uniform chain is
+
+$$
+\rho(\omega) = \frac{2}{\pi \omega_c^2} \sqrt{\omega_c^2 - \omega^2}, \quad |\omega| \le \omega_c
+$$
+
+* This is a **semi-elliptic shape**.
+
+
+### **Step 5: Construct $J(\omega)$**
+
+* System couples only to the first site with $\sqrt{J_0}$.
+* The spectral function is therefore:
+
+$$
+\boxed{J(\omega) = J_0 \rho(\omega) = \frac{2 J_0}{\pi \omega_c^2} \sqrt{\omega_c^2 - \omega^2}}, \quad |\omega| \le \omega_c
+$$
+
+* Outside this range, $J(\omega) = 0$.
+
+
+### **Step 6: Visualization**
+
+* **Shape:** Semi-ellipse, maximum at $\omega = 0$.
+* **Cutoff frequency:** $\omega_c = 2t$
+* **Maximum value:**
+
+$$
+J_{\text{max}} = J(\omega=0) = \frac{2 J_0}{\pi \omega_c^2} \, \omega_c = \frac{2 J_0}{\pi \omega_c}
+$$
+
+* Sketch: Semi-elliptical curve starting from 0 at $-\omega_c$, peaking at $\omega = 0$, and returning to 0 at $+\omega_c$.
+
+
+✅ **Conclusion:**
+
+* The semi-elliptic spectral function emerges naturally from a uniform 1D chain bath coupled to the system’s first site.
+* This derivation is standard in chain-mapped open quantum systems.
+

@@ -1,0 +1,37 @@
+## **Guided Exercise: Semi-Elliptic Spectral Function**
+
+Take the single site + bath Hamiltonian to be $$
+\hat{H} = \epsilon\, \hat{s}^\dagger \hat{s} + \sum_k \sqrt{J_k}\, (\hat{b}_k^\dagger \hat{s} + \hat{s}^\dagger \hat{b}_k) + \sum_k \omega_k \hat{b}_k^\dagger \hat{b}_k
+$$
+
+### **Step 1: Define the spectral function**
+
+**Question:** Express the spectral function $J(\omega)$ in terms of $J_k$ and $\omega_k$.
+
+> Hint: $J(\omega) = \sum_k J_k \delta(\omega - \omega_k)$.
+
+### **Step 2: Continuum limit**
+
+**Question:** How can you replace the discrete sum over $k$ with an integral using the density of states $\rho(\omega)$?
+
+### **Step 3: Map bath to a 1D chain**
+
+**Question:** If we map the bath to a chain of modes coupled to the system operator $\hat{s}$, what is the resulting chain Hamiltonian?
+
+> Hint: It becomes $\sum_n \epsilon_n a_n^\dagger a_n + \sum_n t_n (a_n^\dagger a_{n+1} + \text{h.c.})$, with $\hat{s}$ coupled to the first site $a_0$.
+
+### **Step 4: Uniform chain simplification**
+
+**Question:** Assume $\epsilon_n = 0$ and $t_n = t$. What is the density of states $\rho(\omega)$ of the bath chain?
+
+> Hint: Use the tight-binding result: $\rho(\omega) = \frac{2}{\pi \omega_c^2} \sqrt{\omega_c^2 - \omega^2}$ with $\omega_c = 2t$.
+
+### **Step 5: Construct** $J(\omega)$
+
+**Question:** If the system couples only to the first site of the chain with coupling $\sqrt{J_0}$, how is $J(\omega)$ related to $\rho(\omega)$?
+
+> Hint: $J(\omega) = J_0 \rho(\omega) = \frac{2 J_0}{\pi \omega_c^2} \sqrt{\omega_c^2 - \omega^2}$.
+
+### **Step 6: Visualization**
+
+**Question:** Sketch $J(\omega)$ vs $\omega$. Identify $\omega_c$ and the maximum value. What is the shape?
