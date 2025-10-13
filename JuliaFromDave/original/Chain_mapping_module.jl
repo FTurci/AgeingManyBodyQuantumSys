@@ -706,7 +706,7 @@ end
         ψ = get(kwargs,:ψ_init,deepcopy(DP.ψ_init))    
         
         # Configure updater parameters
-        updater_kwargs = Dict(:ishermitian => true, :issymmetric => true, :eager => true)
+        updater_kwargs = Dict(:ishermitian => true, :issymmetric => true, :eager => true) # FT: WE WANT THIS LINE
         normalize = true
 
         #Normalisation
