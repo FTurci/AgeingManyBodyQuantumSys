@@ -1,0 +1,10 @@
+# Treat Jupyter/Julia notebooks as binary to avoid line-ending conversion and merge issues
+*.ipynb binary
+
+# Keep code files normalized to LF in the repo
+*.py text eol=lf
+*.jl text eol=lf
+
+# Other text files you may want normalized
+*.md text eol=lf
+*.txt text eol=lf
