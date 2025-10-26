@@ -145,7 +145,7 @@ module OQS_Tools_v1
         nSys = zeros(length(ts))
         U = exp(-im * dt .* M )
         for k in 1:length(ts)
-            C = U * M * U'
+            C = U * C * U'
             nSys[k] = real(C[N+1,N+1])
         end
         return nSys, C
