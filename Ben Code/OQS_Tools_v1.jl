@@ -142,8 +142,9 @@ module OQS_Tools_v1
         F = eigen(H)
         U = Matrix(F.vectors)
         M = U' * Matrix(C) * U
+        display(heatmap(real(M)))
         nSys = zeros(length(ts))
-        U = exp(-im * dt .* M )
+        U = exp(-im * dt .* H )
         for k in 1:length(ts)
             C = U * C * U'
             nSys[k] = real(C[N+1,N+1])
