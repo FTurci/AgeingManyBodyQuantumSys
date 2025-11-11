@@ -27,6 +27,10 @@ module OQS_Tools_v1
             J = x -> inband(x) ? 1/(2D) : 0.0
         elseif input == "elliptical"
             J = x -> inband(x) ? sqrt(1 - (x/D)^2) : 0.0
+        elseif input == "ohmic"
+            J = x -> inband(x) ? abs(x) : 0.0
+        elseif input == "lorentzian"
+            J = x -> 1/(1 + (x/D)^2)
         else
             error("spectral function type not recognized")
         end
@@ -102,22 +106,6 @@ module OQS_Tools_v1
         return MPO(ampo, sites)
     end
 
-    function make_H_matrix(E1, E2, h1, h2, Es, N::Int64) #filled/empty site energies, filled/empty hoppings, chain length, system site index
-        """exact diagonalisation Hamiltonian for chain mapped OQS"""
-        E1 = reverse(E1) #empty chain onsite energies
-        h1 = reverse(h1) #empty chain NN couplings
-        d = Vector{Float64}(undef, 2*N+1)     # diagonal 
-        e = Vector{Float64}(undef, 2*N)       # off-diagonal
-        d[1:N] .= E1
-        d[N+1] = Es
-        d[N+2:2N+1] .= E2
-        e[1:N] .= h1
-        e[N+1:2N] .= h2
-        H = SymTridiagonal(d, e)            # Hermitian and tridiagonal
-        return H
-
-    end
-
     function evolve_MPS(psi0::MPS, H::MPO, sys::Int64, dt::Float64, tmax::Float64)
         """Time evolve MPS with Hamiltonian MPO using TDVP"""
         sweeps = Sweeps(2); maxdim!(sweeps, 400, 800); cutoff!(sweeps, 1e-9)
@@ -131,6 +119,22 @@ module OQS_Tools_v1
             println("timestep $k of $len complete")
         end
         return psi, nSys
+    end
+
+    function make_H_matrix(E1, E2, h1, h2, Es, N::Int64) #filled/empty site energies, filled/empty hoppings, chain length, system site index
+        """exact Hamiltonian for chain mapped OQS"""
+        E1 = reverse(E1) #empty chain onsite energies
+        h1 = reverse(h1) #empty chain NN couplings
+        d = Vector{Float64}(undef, 2*N+1)     # diagonal 
+        e = Vector{Float64}(undef, 2*N)       # off-diagonal
+        d[1:N] .= E1
+        d[N+1] = Es
+        d[N+2:2N+1] .= E2
+        e[1:N] .= h1
+        e[N+1:2N] .= h2
+        H = SymTridiagonal(d, e)            # Hermitian and tridiagonal
+        return H
+
     end
 
     function prepare_correlations(N, sys_occ)                             
@@ -148,18 +152,9 @@ module OQS_Tools_v1
         return C0
     end
 
-    function evolve_correlations(C, H, dt, tmax, N::Int64)
-        ts = collect(dt:dt:tmax)
-        F = eigen(H)
-        U = Matrix(F.vectors)
-        M = U' * Matrix(C) * U
-        display(heatmap(real(M)))
-        nSys = zeros(length(ts))
+    function evolve_correlations(C, H, dt, N::Int64)
         U = exp(-im * dt .* H )
-        for k in 1:length(ts)
-            C = U * C * U'
-            nSys[k] = real(C[N+1,N+1])
-        end
-        return C, nSys
+        C = U * C * U'
+        return C
     end
 end #module
