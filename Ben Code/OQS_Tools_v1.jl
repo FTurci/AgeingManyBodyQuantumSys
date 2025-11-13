@@ -113,7 +113,7 @@ module OQS_Tools_v1
         psi = psi0
         ts = collect(dt:dt:tmax)
         len = length(ts)
-        
+        nSys = zeros(len)
         for k in 1:len
             psi = tdvp(H, -im*dt, psi; nsite=2, outputlevel=0,mindim=1, maxdim=100) #time_step=dt, nsweeps=sweeps, order=2)
             nSys[k] = expect(psi, "N")[sys]
