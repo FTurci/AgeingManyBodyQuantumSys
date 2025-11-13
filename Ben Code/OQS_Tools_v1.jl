@@ -14,11 +14,12 @@ module OQS_Tools_v1
     export make_H_mpo
     export make_H_matrix
     export prepare_MPS
-    export evolve_MPS
+    export evolve_MPS_1
+    export evolve_MPS_2
     export prepare_correlations
     export evolve_correlations  
 
-
+    
     function create_spectral(input::AbstractString, D::Float64, g::Float64) # (bool, amp, mean, sd)
         # window
         inband = x -> (-D <= x <= D)
@@ -106,19 +107,35 @@ module OQS_Tools_v1
         return MPO(ampo, sites)
     end
 
-    function evolve_MPS(psi0::MPS, H::MPO, sys::Int64, dt::Float64, tmax::Float64)
+    function evolve_MPS_1(psi0::MPS, H::MPO, sys::Int64, dt::Float64, tmax::Float64)
         """Time evolve MPS with Hamiltonian MPO using TDVP"""
         sweeps = Sweeps(2); maxdim!(sweeps, 400, 800); cutoff!(sweeps, 1e-9)
         psi = psi0
         ts = collect(dt:dt:tmax)
         len = length(ts)
-        nSys = zeros(len)
+        
         for k in 1:len
             psi = tdvp(H, -im*dt, psi; nsite=2, outputlevel=0,mindim=1, maxdim=100) #time_step=dt, nsweeps=sweeps, order=2)
             nSys[k] = expect(psi, "N")[sys]
             println("timestep $k of $len complete")
         end
         return psi, nSys
+    end
+
+    function evolve_MPS_2(psi0::MPS, H::MPO, dt::Float64, tmax::Float64)
+        """Time evolve MPS with Hamiltonian MPO using TDVP, outputs full raw MPS evolution as vector"""
+        sweeps = Sweeps(2); maxdim!(sweeps, 400, 800); cutoff!(sweeps, 1e-9)
+        psi = psi0
+        ts = collect(dt:dt:tmax)
+        len = length(ts)
+        mps_evolution = Vector{MPS}(undef, len)
+
+        for k in 1:len
+            psi = tdvp(H, -im*dt, psi; nsite=2, outputlevel=0,mindim=1, maxdim=100) #time_step=dt, nsweeps=sweeps, order=2)
+            mps_evolution[k] = psi
+            println("timestep $k of $len complete")
+        end
+        return mps_evolution
     end
 
     function make_H_matrix(E1, E2, h1, h2, Es, N::Int64) #filled/empty site energies, filled/empty hoppings, chain length, system site index
