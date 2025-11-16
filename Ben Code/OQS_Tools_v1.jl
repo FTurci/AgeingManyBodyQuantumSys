@@ -138,14 +138,14 @@ module OQS_Tools_v1
         return mps_evolution
     end
 
-    function make_H_matrix(E1, E2, h1, h2, Es, N::Int64) #filled/empty site energies, filled/empty hoppings, chain length, system site index
+    function make_H_matrix(E1, E2, h1, h2, Es, N::Int64, sys) #filled/empty site energies, filled/empty hoppings, chain length, system site index
         """exact Hamiltonian for chain mapped OQS"""
         E1 = reverse(E1) #empty chain onsite energies
         h1 = reverse(h1) #empty chain NN couplings
         d = Vector{Float64}(undef, 2*N+1)     # diagonal 
         e = Vector{Float64}(undef, 2*N)       # off-diagonal
         d[1:N] .= E1
-        d[N+1] = Es
+        d[sys] = Es
         d[N+2:2N+1] .= E2
         e[1:N] .= h1
         e[N+1:2N] .= h2
@@ -154,7 +154,7 @@ module OQS_Tools_v1
 
     end
 
-    function prepare_correlations(N, sys_occ)                             
+    function prepare_correlations(N, sys, sys_occ)                             
         nd0 = sys_occ                 
         
         I_L  = I(N)                
@@ -164,14 +164,26 @@ module OQS_Tools_v1
         C0 = zeros(ComplexF64, 2N+1, 2N+1)
         C0[N+1,N+1] = nd0 + 0im
         C0[1:N, 1:N] .= I_L    
-        C0[2+N:end, 2+N:end] .= Z_L
+        C0[sys+1:end, sys+1:end] .= Z_L
         C0 = Hermitian(C0)
         return C0
     end
 
-    function evolve_correlations(C, H, dt, N::Int64)
-        U = exp(-im * dt .* H )
-        C = U * C * U'
-        return C
+    function evolve_correlations(C0, H, times, N)
+        n = 2N + 1
+        steps = length(times)
+        Cs = Array{ComplexF64,3}(undef, n, n, steps)
+
+        C0 = Matrix(C0)
+        H = Matrix(H)
+
+        for (k,t) in enumerate(times)
+            U = exp(-im * t * H)
+            C = U * C0 * U'
+    
+            Cs[:,:,k] = copy(C)
+        end
+
+        return Cs
     end
 end #module
