@@ -169,21 +169,44 @@ module OQS_Tools_v1
         return C0
     end
 
-    function evolve_correlations(C0, H, times, N)
-        n = 2N + 1
-        steps = length(times)
-        Cs = Array{ComplexF64,3}(undef, n, n, steps)
+    function evolve_correlations(C0, H, dt, N)
+        Cs = Vector{Array{ComplexF64}}(undef, 0)
+        nsys = Vector{Float64}(undef, 0)
 
         C0 = Matrix(C0)
         H = Matrix(H)
-
-        for (k,t) in enumerate(times)
-            U = exp(-im * t * H)
+        step = 0
+        ans = false
+        while ans == false
+            U = exp(-im * dt*step * H)
             C = U * C0 * U'
-    
-            Cs[:,:,k] = copy(C)
+            push!(Cs, C)
+            push!(nsys, real(C[N+1,N+1]))
+            if step % 100 == 0
+                ans = is_relaxed(nsys)
+            end
+            step += 1
         end
 
-        return Cs
+        times = collect(0:dt:step*dt)
+        return Cs, times
+    end
+
+    function is_relaxed(nsys; wsize=100)
+        """used to stop evolve_correlations after a time when the system is considered relaxed"""
+        #finds minimum and maximum values within a window
+        #if difference small then returns true
+        if length(nsys) > wsize*10
+            window = nsys[end-wsize:end]
+            min = minimum(window)
+            max = maximum(window)
+            if max - min < 0.001
+                return true
+            else
+                return false
+            end
+        else
+            return false
+        end
     end
 end #module
