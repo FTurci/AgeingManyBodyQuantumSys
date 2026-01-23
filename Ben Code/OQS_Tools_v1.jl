@@ -60,7 +60,7 @@ module OQS_Tools_v1
         returns the coefficients alpha and beta from the recurrence relation of the family."""
         supp = (-D, D)
         meas = Measure("bath", J, supp, false, Dict())
-        ortho_poly = OrthoPoly("bath_op", N, meas; Nquad=2000)   
+        ortho_poly = OrthoPoly("bath_op", N, meas; Nquad=10000)   
         chain = coeffs(ortho_poly)                                  
         E = chain[1:N,1] #site energies
         h = sqrt.(chain[1:N,2]) #site hoppings (first term is system hopping)
