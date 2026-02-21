@@ -1,4 +1,4 @@
-module SingleBodyOQS
+module NM_measures_1body
 
 """functions for simulating single quantum dot connected to two thermal baths,
  specifically to calculate NM measures."""
@@ -209,16 +209,24 @@ module SingleBodyOQS
     end
 
     function evolve_corrs(C0, H, P)
-        (;N_L, N_R, dt) = P
+        (;N_L, N_R, D_L, D_R, dt) = P
         Cs = Vector{Array{ComplexF64}}(undef, 0)
         C0 = Matrix(C0)
         H = Matrix(H)
         
         step_max=2000
         if N_L <= N_R
-            step_max = round(2*N_L/dt)
+            if D_L <= D_R
+                step_max = round(2*N_L/(dt*D_R))
+            else
+                step_max = round(2*N_L/(dt*D_L))
+            end
         else
-            step_max = round(2*N_R/dt)
+            if D_L <= D_R
+                step_max = round(2*N_R/(dt*D_R))
+            else
+                step_max = round(2*N_R/(dt*D_L))
+            end
         end
 
         # Pre-compute the single step propagator
@@ -248,8 +256,19 @@ module SingleBodyOQS
         return Cs
     end
 
-    function simulate(P)
+    function calculate_measures(P)
+        (;spec_fun, Γ_L, Γ_R, D_L, D_R, dt) = P
+        qA = N_L + 1 ; qS = N_L + 2 #ancilla and system index
 
+        J_L = spectral_function(spec_fun, D_L, Γ_L)
+        J_R = spectral_function(spec_fun, D_R, Γ_R)
+        H = H_tot(J_L, J_R, P)
+        C0_e, C0_f, C0_CJ = prepare_corrs(P)
+        Cs_e = evolve_corrs(C0_e, H, dt)
+        Cs_f = evolve_corrs(C0_f, H, dt)
+        Cs_CJ = evolve_corrs(C0_CJ, H, dt)
+
+        
     end
 
 end
