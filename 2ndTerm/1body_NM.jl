@@ -407,7 +407,7 @@ function calculate_ρ_using_G(corr_full, qS, qA)
     # --- Added Eigenvalue Regularization ---
     F_G = eigen(G)
     # Clamp the real parts to avoid exactly 0.0 or 1.0
-    reg_evals = [clamp(real(v), 1e-12, 1.0 - 1e-12) + im*imag(v) for v in F_G.values]
+    reg_evals = [clamp(real(v), 1e-10, 1.0 - 1e-10) + im*imag(v) for v in F_G.values]
     G = F_G.vectors * Diagonal(reg_evals) * inv(F_G.vectors)
     # ---------------------------------------
 
@@ -484,7 +484,7 @@ function calculate_BLP(P; plotting=false)
 end
 
 #test function
-function calculate_RHP(P)
+function calculate_RHP(P, min_diff)
     (;spec_fun, Γ_L, Γ_R, D_L, D_R, dt, N_L) = P
     
     qA = 2*N_L + 1 
@@ -509,15 +509,15 @@ function calculate_RHP(P)
     singular_times = Float64[]
     
     # Convergence Tracking Variables
-    eval_tol = 1e-4
+    eval_tol = 1e-4 #absolute tolerance
     steps_required = Int(10.0/dt)
     consecutive_success = 0
     converge_time = 0.0
     prev_evals_real = zeros(Float64, 4)
-    
+    diff_sequence  = Float64[]
     println("Extracting Exact RHP Measure and Generator Eigenvalues...")
     
-    @showprogress for i in 1:(length(Cs_CJ)-1)
+    for i in 1:(length(Cs_CJ)-1)
         
         # Extract maps for current, next, and previous time steps
         Λ_t = calculate_ρ_using_G(Cs_CJ[i], qS, qA)
@@ -585,7 +585,8 @@ function calculate_RHP(P)
         trace_norm = sum(abs.(eigen(ρ_exact).values))
         diff = trace_norm - 1.0
         
-        if diff > 1e-5
+        push!(diff_sequence, diff)
+        if diff > min_diff
             current_rhp += diff 
         end
         push!(rhp_accum, current_rhp)
@@ -626,7 +627,8 @@ function calculate_RHP(P)
         scatter!(p2, singular_times, zeros(length(singular_times)), color=:red, markersize=3, label="Singularities")
     end
     
-    p_combined = plot(p1, p2, layout=(2, 1), size=(800, 600), dpi=400)
+    p3 = plot(diff_sequence)
+    p_combined = plot(p1, p2, p3, layout=(3, 1), size=(800, 1000), dpi=400)
     display(p_combined)
     
     return current_rhp, rhp_accum
