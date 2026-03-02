@@ -4,8 +4,8 @@ module NM_measures_1body
 export base_params, set_P, spectral_function, thermofield_double, 
        chain_map, H_bath, H_tot, prepare_corrs, evolve_corrs, 
        spin_operators, matrix_operators, matrix_log, map_to_principal, 
-       ρ_to_Λ, Λ_to_ρ, calculate_ρ_using_G, calculate_RHP, calculate_BLP, 
-       calculate_mpemba
+       ρ_to_Λ, Λ_to_ρ, calculate_ρ_using_G, extract_maps, calculate_BLP, calculate_RHP,
+       calculate_mpemba, inverseFT_spectral_function
 
 using LinearAlgebra
 using PolyChaos
@@ -31,8 +31,7 @@ mutable struct base_params
     Γ_R ::Float64                    #overall right bath coupling strength
     E_sys ::Float64                  #system site energy
     dt ::Float64                     #timestep length
-    init_occ ::Float64               #initial occupation
-
+   
     base_params() = new()
 end
 
@@ -77,7 +76,7 @@ function spectral_function(P, side)
 
     elseif spec_fun == "ellipse"
         J = x -> inband(x) ? sqrt(1 - (x/D)^2) : 0.0
-        norm = quadgk(J, -1.2D, 1.2D)[1]           
+        norm = quadgk(J, -D, D)[1]           
         Jnorm = x -> g*D/pi * J(x) / norm
 
     elseif spec_fun == "smoothed ellipse"
@@ -113,6 +112,75 @@ function thermofield_double(J, beta::Float64, mu::Float64)
     J2 = w -> J(w) * (1 - fermi(w)) #empty mode spectral density
     return J1, J2
 end
+
+function inverseFT_spectral_function(P)
+
+    (;spec_fun, D_R, β_R, μ_R, Γ_R, dt) = P
+    J = spectral_function(P, "R")
+    J1, J2 = thermofield_double(J, β_R, μ_R)
+    tvals = collect(0.0:dt:100.0)
+    
+    IFT1 = zeros(ComplexF64, length(tvals))
+    for (i,t) in enumerate(tvals)
+        func1 = w -> exp(-im * t * w) * J1(w)
+        IFT1[i] = quadgk(func1, -D_R, D_R)[1]
+    end
+    IFT1 = IFT1 .* (1/2pi)
+    diss_kernel = imag.(IFT1)
+    noise_kernel = real.(IFT1)
+
+    p1 = plot(tvals, diss_kernel, xlabel="Time", ylabel="IFT[\$J(\\omega)\$]", label="Imag",
+             title="$(spec_fun) filled, \$\\beta=$(β_R),\\mu=$(μ_R), \\Gamma=$(Γ_R), D=$(D_R)\$", dpi=400)
+    plot!(p1, tvals, noise_kernel, label="Real")
+
+    tot1 = noise_kernel .+ diss_kernel
+    #"""
+    for (i,x) in enumerate(tot1)
+        tot1[i] = (x < 0.0) ? -x : 0.0
+    end
+    #"""
+    p2 = plot(tvals, tot1, xlabel="Time", ylabel="Imag + Real < 0", label="", dpi=400)
+
+    p = plot(p1, p2, layout=(2,1), size=(800,800))
+    display(p)
+    
+    IFT2 = zeros(ComplexF64, length(tvals))
+    for (i,t) in enumerate(tvals)
+        func1 = w -> exp(-im * t * w) * J2(w)
+        IFT2[i] = quadgk(func1, -D_R, D_R)[1]
+    end
+    IFT2 = IFT2 .* (1/2pi)
+    diss_kernel = imag.(IFT2)
+    noise_kernel = real.(IFT2)
+    
+    p1 = plot(tvals, diss_kernel, xlabel="Time", ylabel="IFT[\$J(\\omega)\$]", label="Imag",
+             title="$(spec_fun) empty, \$\\beta=$(β_R),\\mu=$(μ_R), \\Gamma=$(Γ_R), D=$(D_R)\$", dpi=400)
+    plot!(p1, tvals, noise_kernel, label="Real")
+
+    tot2 = diss_kernel
+    #"""
+    for (i,x) in enumerate(tot2)
+        tot2[i] = (x > 0.0) ? x : 0.0
+    end
+    #"""
+    p2 = plot(tvals, tot2, xlabel="Time", ylabel="Real - Imag > 0", label="", dpi=400)
+
+    p = plot(p1, p2, layout=(2,1), size=(800,800))
+    display(p)
+
+    tot = tot1 .+ tot2
+    """
+    for (i,x) in enumerate(tot)
+        tot[i] = (x < 0.0) ? -x : 0.0
+    end
+    """
+    p3 = plot(tvals, tot, xlabel="Time", ylabel="Filled + Empty < 0", label="", dpi=200)
+    display(p3)
+
+
+    return IFT1, IFT2
+end
+
 
 function chain_map(J, N::Int64, D::Float64, P)
     """calculates family of monic orthogonal polynomials w.r.t the measure J(x) up to the Nth term."""
@@ -255,20 +323,14 @@ function prepare_corrs(P)
 end
 
 function evolve_corrs(C0, H, P)
-    (;N_L, N_R, D_L, D_R, dt) = P
+    (;N_L, N_R, D_R, dt) = P
     Cs = Vector{Array{ComplexF64}}(undef, 0)
     C_curr = Matrix(C0)
     H = Matrix(H)
     
-    step_min = 1000
-    step_max = 2000
-    """
-    if N_L >= N_R
-        step_max = round(Int, N_L/(dt*max(D_L, D_R))) 
-    else
-        step_max = round(Int, N_R/(dt*max(D_L, D_R)))
-    end
-    """
+    step_min = Int(100/dt)
+    step_max = Int(N_R/(D_R*dt))
+    
     U_dt = exp(-im * dt * H) 
     U_dt_dag = U_dt'
     
@@ -291,7 +353,7 @@ function evolve_corrs(C0, H, P)
             end
         end
         step += 1
-        if step > step_max; break; end 
+        if step >= step_max; break; end #break when end of chains perturb
     end
     return Cs
 end
@@ -366,8 +428,9 @@ function ρ_to_Λ(ρ, Ns)
     Λ = zeros(ComplexF64, d^2, d^2) 
     for i_s=1:d, j_s=1:d
         for i_a=1:d, j_a=1:d  
+            # Corrected to reflect Ancilla (i_a) x System (i_s) basis
             Λ[(i_s-1)*d + j_s, (i_a-1)*d + j_a] = 
-                conj(d*ρ[(i_s-1)*d + i_a, (j_s-1)*d + j_a])
+                conj(d*ρ[(i_a-1)*d + i_s, (j_a-1)*d + j_s])
         end
     end
     return Λ
@@ -375,19 +438,19 @@ end
 
 function Λ_to_ρ(Λ, Ns)
     """
-    Reverse operation of ρ_to_Λ. 
+    Reverse operation of ρ_to_Λ.
     Constructs the Choi matrix ρ of a map Λ.
     """
     d = 2^Ns
     ρ = zeros(ComplexF64, d^2, d^2)
-    # The inverse relation derived from ρ_to_Λ
     for i_s=1:d, j_s=1:d
         for i_a=1:d, j_a=1:d
             row_L = (i_s-1)*d + j_s
             col_L = (i_a-1)*d + j_a
             
-            row_R = (i_s-1)*d + i_a
-            col_R = (j_s-1)*d + j_a
+            # Corrected to reflect Ancilla x System basis
+            row_R = (i_a-1)*d + i_s
+            col_R = (j_a-1)*d + j_s
             
             ρ[row_R, col_R] = conj(Λ[row_L, col_L]) / d
         end
@@ -407,7 +470,7 @@ function calculate_ρ_using_G(corr_full, qS, qA)
     # --- Added Eigenvalue Regularization ---
     F_G = eigen(G)
     # Clamp the real parts to avoid exactly 0.0 or 1.0
-    reg_evals = [clamp(real(v), 1e-10, 1.0 - 1e-10) + im*imag(v) for v in F_G.values]
+    reg_evals = [clamp(real(v), 1e-12, 1.0 - 1e-12) + im*imag(v) for v in F_G.values]
     G = F_G.vectors * Diagonal(reg_evals) * inv(F_G.vectors)
     # ---------------------------------------
 
@@ -434,6 +497,29 @@ function calculate_ρ_using_G(corr_full, qS, qA)
     return Λ
 end
 
+function extract_maps(P)
+    """extracts the dynamical map, intermediate map and the liouvillian generator at each time step"""
+    (;dt, N_L) = P
+    
+    qA = 2*N_L + 1 
+    qS = 2*N_L + 2 
+
+    println("Calculating Spectral Functions...")
+    J_L = spectral_function(P, "L")
+    J_R = spectral_function(P, "R")
+    
+    println("Constructing Hamiltonian and Evolving State...")
+    H = H_tot(J_L, J_R, P)
+    _, _, C0_CJ = prepare_corrs(P)
+    Cs_CJ = evolve_corrs(C0_CJ, H, P)
+
+    Λ_vec = [calculate_ρ_using_G(Cs_CJ[i], qS, qA) for i in 2:length(Cs_CJ)] #vector of dynamical maps
+    Λ_inv = pinv.(Λ_vec[1:end-1])
+    V_vec = Λ_vec[2:end] .* Λ_inv #vector of intermediate maps
+    L_vec = ((Λ_vec[2:end]-Λ_vec[1:end-1])./dt) .* Λ_inv #vector of generators
+
+    return Λ_vec, V_vec, L_vec
+end
 
 function calculate_BLP(P; plotting=false)
     (;spec_fun, Γ_L, Γ_R, β_R, μ_R, D_L, D_R, dt, N_L) = P
@@ -484,178 +570,126 @@ function calculate_BLP(P; plotting=false)
 end
 
 #test function
-function calculate_RHP(P, min_diff)
-    (;spec_fun, Γ_L, Γ_R, D_L, D_R, dt, N_L) = P
+function calculate_RHP(P; plotting=false)
+    (;dt, N_L) = P
     
-    qA = 2*N_L + 1 
-    qS = 2*N_L + 2 
-
-    println("Calculating Spectral Functions...")
-    J_L = spectral_function(P, "L")
-    J_R = spectral_function(P, "R")
+    Λ_vec, V_vec, L_vec = extract_maps(P)
     
-    println("Constructing Hamiltonian and Evolving State...")
-    H = H_tot(J_L, J_R, P)
-    _, _, C0_CJ = prepare_corrs(P)
-    Cs_CJ = evolve_corrs(C0_CJ, H, P)
-    
-    times = [i*dt for i in 0:length(Cs_CJ)-1]
-    rhp_accum = Float64[]
-    push!(rhp_accum, 0.0)
+    times = [i*dt for i in 1:length(V_vec)]
+    rhp_accum = zeros(length(V_vec))
+    rhp_step = zeros(length(V_vec))
     current_rhp = 0.0
-
-    # Accumulators for the 4 eigenvalues and singularity points
-    evals_history = [Float64[] for _ in 1:4]
-    singular_times = Float64[]
     
-    # Convergence Tracking Variables
-    eval_tol = 1e-4 #absolute tolerance
-    steps_required = Int(10.0/dt)
-    consecutive_success = 0
-    converge_time = 0.0
-    prev_evals_real = zeros(Float64, 4)
-    diff_sequence  = Float64[]
-    println("Extracting Exact RHP Measure and Generator Eigenvalues...")
+    if plotting==true #only need generator eigenvalues for plotting
+        L_evals = [Float64[] for _ in 1:4]
+        for (i, L) in enumerate(L_vec)
+            # Extract and sort eigenvalues for generator
+            evals_current = eigen(L).values
+            sort!(evals_current, by = x -> (real(x), imag(x)))
+            evals_real = real.(evals_current)
+            for j in 1:4
+                push!(L_evals[j], evals_real[j])
+            end
+        end
+    end
+
+    for (i, V) in enumerate(V_vec)
+        # Choi State Trace Norm Calculation
+        ρ_choi = Λ_to_ρ(V, 1)
+        trace_norm = sum(svdvals(ρ_choi))
+
+        diff = trace_norm - 1.0
+        rhp_step[i] = diff / dt
+
+        current_rhp += diff 
+        rhp_accum[i] = current_rhp    
+    end
     
-    for i in 1:(length(Cs_CJ)-1)
+    final_rhp = rhp_accum[end]
+    println("Final RHP Measure: ", final_rhp)
+
+    # --- PLOTTING ---
+    if plotting==true
         
-        # Extract maps for current, next, and previous time steps
-        Λ_t = calculate_ρ_using_G(Cs_CJ[i], qS, qA)
-        Λ_next = calculate_ρ_using_G(Cs_CJ[i+1], qS, qA)
-
-        # ======================================================================
-        # 1. SINGULARITY TRACKING
-        # ======================================================================
+        p1 = plot(times, rhp_accum, xlabel="Time", ylabel="\$\\mathcal{N}_{RHP}(t)\$", legend=false, lw=2, dpi=500)
         
-        # Track when the dynamical map loses full rank
-        F_SVD = svd(Λ_t)
-        if minimum(F_SVD.S) < 1e-10
-            push!(singular_times, times[i])
-        end
-
-        # ======================================================================
-        # 2. EXACT GENERATOR & CONVERGENCE EXTRACTION
-        # ======================================================================
+        p2 = plot(times, rhp_step, label="", xlabel="Time", lw=2,
+            ylabel="\$||\\mathbb{I} \\otimes \\Lambda(t+\\delta t, t) P^+ || - 1 \$", legend=false, dpi=500)
         
-        # Compute exact matrix derivative dΛ/dt via central difference
-        if i == 1
-            dΛ_dt = (Λ_next - Λ_t) / dt
-        else
-            Λ_prev = calculate_ρ_using_G(Cs_CJ[i-1], qS, qA)
-            dΛ_dt = (Λ_next - Λ_prev) / (2 * dt)
-        end
-
-        # Construct full generator superoperator L(t)
-        # Tolerance applied to suppress singularity noise
-        L_t = dΛ_dt * pinv(Λ_t, rtol=1e-10)
-
-        # Extract and sort eigenvalues lexicographically
-        evals_current = eigen(L_t).values
-        sort!(evals_current, by = x -> (real(x), imag(x)))
-        evals_real = real.(evals_current)
+            
+        p3 = plot(xlabel="Time", ylabel="\$Re[\\mathcal{L}_i (t)]\$", legend=:bottomright, dpi=500)
         
         for j in 1:4
-            push!(evals_history[j], evals_real[j])
+            plot!(p3, times, L_evals[j], label="", lw=2)
         end
 
-    # Track Convergence of Real Eigenvalues
-        max_eval_diff = maximum(abs.(evals_real .- prev_evals_real)) / dt
-        if max_eval_diff < eval_tol
-            consecutive_success += 1
-            if consecutive_success == steps_required && converge_time == 0.0
-                converge_time = times[i] - (steps_required * dt)
-            end
-        else
-            consecutive_success = 0
+        # Mark convergence time
+        """
+        if converge_time > 0.0
+            vline!(p1, [converge_time], line=:dash, color=:black)
+            vline!(p2, [converge_time], line=:dash, color=:black)
+            vline!(p3, [converge_time], line=:dash, color=:black, label="Generator convergence")
         end
-
-        prev_evals_real = evals_real
-
-        # ======================================================================
-        # 3. RHP MEASURE EXTRACTION (Exact Discrete Map Method)
-        # ======================================================================
-        
-        # Calculate exact forward intermediate map
-        V_exact = Λ_next * pinv(Λ_t, rtol=1e-10)
-        
-        # Choi State Trace Norm Calculation
-        ρ_exact = Λ_to_ρ(V_exact, 1)
-        ρ_exact = Hermitian(0.5 * (ρ_exact + ρ_exact'))
-        
-        trace_norm = sum(abs.(eigen(ρ_exact).values))
-        diff = trace_norm - 1.0
-        
-        push!(diff_sequence, diff)
-        if diff > min_diff
-            current_rhp += diff 
-        end
-        push!(rhp_accum, current_rhp)
-    end
-    
-    if converge_time > 0.0
-        println("Generator convergence detected at t = $(converge_time)")
-    else
-        println("Generator did not fully converge.")
-    end
-    println("Final RHP Measure: ", current_rhp)
-    println("Dynamical map was singular at $(length(singular_times)) measured time intervals.")
-    
-    # --- PLOTTING ---
-    time_axis = times[1:length(rhp_accum)]
-    
-    p1 = plot(time_axis, rhp_accum, 
-         title="Exact RHP Measure", 
-         xlabel="Time", ylabel="RHP(t)", legend=false, linewidth=2)
-         
-    time_axis_evals = times[1:length(evals_history[1])]
-    
-    p2 = plot(title="Real Part of Generator Eigenvalues", 
-              xlabel="Time", ylabel="Re(λ_i)", legend=:bottomright)
-    
-    for j in 1:4
-        plot!(p2, time_axis_evals, evals_history[j], label="λ_$j", linewidth=2)
-    end
-    
-    # Mark convergence time
-    if converge_time > 0.0
-        vline!(p1, [converge_time], line=:dash, color=:black, label="Convergence")
-        vline!(p2, [converge_time], line=:dash, color=:black, label="Convergence")
+        """
+        g = P.Γ_R; mu = P.μ_R; beta = P.β_R;
+        p_combined = plot(p1, p2, p3, plot_title="\$\\beta=$beta, \\mu=$mu, \\Gamma=$g\$",
+                        layout=(3, 1), size=(800, 800))
+        display(p_combined)
     end
 
-    # Overlay scatter points along the x-axis for instances of singularities
-    if length(singular_times) > 0
-        scatter!(p2, singular_times, zeros(length(singular_times)), color=:red, markersize=3, label="Singularities")
-    end
-    
-    p3 = plot(diff_sequence)
-    p_combined = plot(p1, p2, p3, layout=(3, 1), size=(800, 1000), dpi=400)
-    display(p_combined)
-    
-    return current_rhp, rhp_accum
+    return final_rhp
 end
 
-function calculate_mpemba(P)
+function calculate_mpemba(P, mem_time; plotting=false)
+    """Calculates non-Markovian Mpemba state based on a given memory time"""
     (; dt, N_L) = P
     
-    qA = 2*N_L + 1 
-    qS = 2*N_L + 2 
+    Λ_vec, V_vec, L_vec = extract_maps(P)
+    times = [i*dt for i in 1:length(Λ_vec)]
+    idx = argmin(abs.(times .- mem_time)) #memory time index
 
-    println("Calculating Spectral Functions and Evolving...")
-    J_L = spectral_function(P, "L")
-    J_R = spectral_function(P, "R")
-    H = H_tot(J_L, J_R, P)
-    _, _, C0_CJ = prepare_corrs(P)
-    Cs_CJ = evolve_corrs(C0_CJ, H, P)
-    
-    times = [i*dt for i in 0:length(Cs_CJ)-1]
+    S = Λ_vec[idx] #slippage operator
+    S_inv  = pinv(S) #inverse slippage
 
-    # Pre-calculate the entire sequence of dynamical maps
-    Λ_vec = [calculate_ρ_using_G(Cs_CJ[i], qS, qA) for i in 1:length(Cs_CJ)]
-    
-    println("Locating Memory Time (τ_m) via Population Subspace...")
-    
-    
-    return ρ_E_mat, ρ_SS_mat, delta_p
+    F = eigen(V_vec[end]) #TDFP converges faster for V than Λ
+    idx = argmin(abs.(abs.(F.values) .- 1.0)) #eigenvalue closest to 1
+    ρ_inf = F.vectors[:, idx] #steady state
+    pinf = real(ρ_inf[end]/sum(ρ_inf)) #population of steady state
+    ρ_f = S_inv * ρ_inf #Mpemba state
+    ρ_f = ρ_f / tr(reshape(ρ_f, 2, 2))
+    pf = real(ρ_f[end]) #population of Mpemba state
+    println("Mpemba state is $pf, Steady state is $pinf.")
+    if plotting==true
+         Λ_TDFP = zeros(length(times))
+         V_TDFP = zeros(length(times)-1)
+         L_TDFP = zeros(length(times)-1)
+        for (i,Λ) in enumerate(Λ_vec)
+            F = eigen(Λ)
+            idx = argmin(abs.(abs.(F.values) .- 1.0)) #eigenvalue closest to 1
+            ρ_TDFP = F.vectors[:, idx] #corresponding eigenvector
+            Λ_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
+        end
+        
+        for (i,V) in enumerate(V_vec)
+            F = eigen(V)
+            idx = argmin(abs.(abs.(F.values) .- 1.0)) #eigenvalue closest to 1
+            ρ_TDFP = F.vectors[:, idx] #corresponding eigenvector
+            V_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
+        end
+
+        for (i,L) in enumerate(L_vec)
+            F = eigen(L)
+            idx = argmin(abs.(abs.(F.values))) #eigenvalue closest to 0
+            ρ_TDFP = F.vectors[:, idx] #corresponding eigenvector
+            L_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
+        end
+        p = plot(times, Λ_TDFP, xlabel="time", ylabel="\$p_{TDFP}\$", label="\$\\Lambda\$", lw=2, dpi=200)
+        plot!(p, times[1:end-1], V_TDFP, label="\$\\mathcal{V}\$", lw=2)
+        plot!(p, times[1:end-1], L_TDFP, label="\$\\mathcal{L}\$", linestyle=:dot, lw=2)
+        display(p)
+    end
+
+    return pf, pinf
 end
 
 end
