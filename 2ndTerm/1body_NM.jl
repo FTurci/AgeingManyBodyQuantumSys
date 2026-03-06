@@ -5,7 +5,7 @@ export base_params, set_P, spectral_function, thermofield_double,
        chain_map, H_bath, H_tot, prepare_corrs, evolve_corrs, 
        spin_operators, matrix_operators, matrix_log, map_to_principal, 
        ρ_to_Λ, Λ_to_ρ, calculate_ρ_using_G, extract_maps, calculate_BLP, calculate_RHP,
-       calculate_mpemba, inverseFT_spectral_function
+       calculate_Mpemba, calculate_TDFP, calculate_oCP, calculate_iCP
 
 using LinearAlgebra
 using PolyChaos
@@ -15,6 +15,7 @@ using ProgressMeter
 using Kronecker
 using JLD2
 using SparseArrays
+using Contour
 
 mutable struct base_params
     spec_fun ::AbstractString        #type of spectral function
@@ -31,7 +32,7 @@ mutable struct base_params
     Γ_R ::Float64                    #overall right bath coupling strength
     E_sys ::Float64                  #system site energy
     dt ::Float64                     #timestep length
-   
+    T ::Float64                      #final time
     base_params() = new()
 end
 
@@ -40,8 +41,8 @@ function set_P()
     P = base_params();
     P.spec_fun = "ellipse"
     P.v = 100.0
-    P.N_L = 100
-    P.N_R = 100
+    P.N_L = 50
+    P.N_R = 50
     P.β_L = 20.0
     P.β_R = 20.0
     P.μ_L = 0.0
@@ -52,6 +53,7 @@ function set_P()
     P.Γ_R = 0.01
     P.E_sys = 0.0
     P.dt = 0.1
+    P.T = 100.0
     return P
 end
 
@@ -112,75 +114,6 @@ function thermofield_double(J, beta::Float64, mu::Float64)
     J2 = w -> J(w) * (1 - fermi(w)) #empty mode spectral density
     return J1, J2
 end
-
-function inverseFT_spectral_function(P)
-
-    (;spec_fun, D_R, β_R, μ_R, Γ_R, dt) = P
-    J = spectral_function(P, "R")
-    J1, J2 = thermofield_double(J, β_R, μ_R)
-    tvals = collect(0.0:dt:100.0)
-    
-    IFT1 = zeros(ComplexF64, length(tvals))
-    for (i,t) in enumerate(tvals)
-        func1 = w -> exp(-im * t * w) * J1(w)
-        IFT1[i] = quadgk(func1, -D_R, D_R)[1]
-    end
-    IFT1 = IFT1 .* (1/2pi)
-    diss_kernel = imag.(IFT1)
-    noise_kernel = real.(IFT1)
-
-    p1 = plot(tvals, diss_kernel, xlabel="Time", ylabel="IFT[\$J(\\omega)\$]", label="Imag",
-             title="$(spec_fun) filled, \$\\beta=$(β_R),\\mu=$(μ_R), \\Gamma=$(Γ_R), D=$(D_R)\$", dpi=400)
-    plot!(p1, tvals, noise_kernel, label="Real")
-
-    tot1 = noise_kernel .+ diss_kernel
-    #"""
-    for (i,x) in enumerate(tot1)
-        tot1[i] = (x < 0.0) ? -x : 0.0
-    end
-    #"""
-    p2 = plot(tvals, tot1, xlabel="Time", ylabel="Imag + Real < 0", label="", dpi=400)
-
-    p = plot(p1, p2, layout=(2,1), size=(800,800))
-    display(p)
-    
-    IFT2 = zeros(ComplexF64, length(tvals))
-    for (i,t) in enumerate(tvals)
-        func1 = w -> exp(-im * t * w) * J2(w)
-        IFT2[i] = quadgk(func1, -D_R, D_R)[1]
-    end
-    IFT2 = IFT2 .* (1/2pi)
-    diss_kernel = imag.(IFT2)
-    noise_kernel = real.(IFT2)
-    
-    p1 = plot(tvals, diss_kernel, xlabel="Time", ylabel="IFT[\$J(\\omega)\$]", label="Imag",
-             title="$(spec_fun) empty, \$\\beta=$(β_R),\\mu=$(μ_R), \\Gamma=$(Γ_R), D=$(D_R)\$", dpi=400)
-    plot!(p1, tvals, noise_kernel, label="Real")
-
-    tot2 = diss_kernel
-    #"""
-    for (i,x) in enumerate(tot2)
-        tot2[i] = (x > 0.0) ? x : 0.0
-    end
-    #"""
-    p2 = plot(tvals, tot2, xlabel="Time", ylabel="Real - Imag > 0", label="", dpi=400)
-
-    p = plot(p1, p2, layout=(2,1), size=(800,800))
-    display(p)
-
-    tot = tot1 .+ tot2
-    """
-    for (i,x) in enumerate(tot)
-        tot[i] = (x < 0.0) ? -x : 0.0
-    end
-    """
-    p3 = plot(tvals, tot, xlabel="Time", ylabel="Filled + Empty < 0", label="", dpi=200)
-    display(p3)
-
-
-    return IFT1, IFT2
-end
-
 
 function chain_map(J, N::Int64, D::Float64, P)
     """calculates family of monic orthogonal polynomials w.r.t the measure J(x) up to the Nth term."""
@@ -281,9 +214,9 @@ function H_tot(J_L, J_R, P)
 end
 
 function prepare_corrs(P)
-    """creates initial correlation matrix"""
+    """creates initial correlation matrix empty, central system matrix needs to be added in"""
     (;N_L, N_R) = P
-
+    Csys = complex([0.0 0.0 ; 0.0 0.0])
     function make_bath_corr(N)
         C = zeros(ComplexF64, 2N, 2N)
         for n in 1:2N
@@ -298,53 +231,37 @@ function prepare_corrs(P)
 
     if N_L == 0
         C_R = make_bath_corr(N_R)
-        C_emp = complex([0.0 0.0 ; 0.0 0.0]) 
-        C_full = complex([0.0 0.0 ; 0.0 1.0])
-        C_CJ = complex([0.5 0.5 ; 0.5 0.5]) 
-
-        C0_emp = cat(C_emp, C_R; dims=(1,2))
-        C0_full = cat(C_full, C_R; dims=(1,2))
-        C0_CJ = cat(C_CJ, C_R; dims=(1,2))
-        return C0_emp, C0_full, C0_CJ
+        C0 = cat(Csys, C_R; dims=(1,2))
+        return C0
     end
 
     C_L = make_bath_corr(N_L)
     C_R = make_bath_corr(N_R)
 
-    C_emp = complex([0.0 0.0 ; 0.0 0.0]) 
-    C_full = complex([0.0 0.0 ; 0.0 1.0]) 
-    C_CJ = complex([0.5 0.5 ; 0.5 0.5]) 
+    C0 = cat(reverse(C_L), Csys, C_R; dims=(1,2))
 
-    C0_emp = cat(reverse(C_L), C_emp, C_R; dims=(1,2))
-    C0_full = cat(reverse(C_L), C_full, C_R; dims=(1,2))
-    C0_CJ = cat(reverse(C_L), C_CJ, C_R; dims=(1,2))
-
-    return C0_emp, C0_full, C0_CJ
+    return C0
 end
 
-function evolve_corrs(C0, H, P)
-    (;N_L, N_R, D_R, dt) = P
+function evolve_corrs(C0, H, P, T)
+    (;dt) = P
     Cs = Vector{Array{ComplexF64}}(undef, 0)
     C_curr = Matrix(C0)
     H = Matrix(H)
     
-    step_min = Int(100/dt)
-    step_max = Int(N_R/(D_R*dt))
+    step_max = Int(round(T/dt)) + 1
     
     U_dt = exp(-im * dt * H) 
     U_dt_dag = U_dt'
     
-    push!(Cs, C_curr)
-    
-    step = 1
-    settled = false
-    
-    qS = 2*N_L + 2 #system index
+    Cs = Vector{Any}(undef, step_max)
+    Cs[1] = C_curr
+    step = 2
 
-    while !settled
+    while step <= step_max
         C_curr = U_dt * C_curr * U_dt_dag
-        push!(Cs, C_curr)
-        
+        Cs[step] = C_curr
+        """
         if (step % 100 == 0) && (step >= step_min)
             if length(Cs) > 100
                 nSys = [real(M[qS, qS]) for M in Cs[end-100:end]]
@@ -352,8 +269,9 @@ function evolve_corrs(C0, H, P)
                 settled = (max_val - min_val < 1e-5)
             end
         end
+        """
         step += 1
-        if step >= step_max; break; end #break when end of chains perturb
+        #if step >= step_max; break; end #break when end of chains perturb
     end
     return Cs
 end
@@ -497,32 +415,47 @@ function calculate_ρ_using_G(corr_full, qS, qA)
     return Λ
 end
 
-function extract_maps(P)
-    """extracts the dynamical map, intermediate map and the liouvillian generator at each time step"""
+function extract_maps(P, C0_input, T; num=3)
     (;dt, N_L) = P
-    
     qA = 2*N_L + 1 
     qS = 2*N_L + 2 
 
-    println("Calculating Spectral Functions...")
+    C0 = copy(C0_input)
+    
+    #severing system-bath correlations
+    C0[qA:qS, 1:qA-1] .= 0.0
+    C0[1:qA-1, qA:qS] .= 0.0
+    C0[qA:qS, qS+1:end] .= 0.0
+    C0[qS+1:end, qA:qS] .= 0.0
+
+    #CJ isomorphism
+    C0[qA:qS, qA:qS] .= 0.5
+    
     J_L = spectral_function(P, "L")
     J_R = spectral_function(P, "R")
-    
-    println("Constructing Hamiltonian and Evolving State...")
     H = H_tot(J_L, J_R, P)
-    _, _, C0_CJ = prepare_corrs(P)
-    Cs_CJ = evolve_corrs(C0_CJ, H, P)
+    
+    Cs = evolve_corrs(C0, H, P, T)
 
-    Λ_vec = [calculate_ρ_using_G(Cs_CJ[i], qS, qA) for i in 2:length(Cs_CJ)] #vector of dynamical maps
-    Λ_inv = pinv.(Λ_vec[1:end-1])
-    V_vec = Λ_vec[2:end] .* Λ_inv #vector of intermediate maps
-    L_vec = ((Λ_vec[2:end]-Λ_vec[1:end-1])./dt) .* Λ_inv #vector of generators
-
-    return Λ_vec, V_vec, L_vec
+    if num==1
+        Λ_vec = [calculate_ρ_using_G(Cs[i], qS, qA) for i in 2:length(Cs)]
+        return Λ_vec
+    elseif num==2 
+        Λ_vec = [calculate_ρ_using_G(Cs, qS, qA) for i in 2:length(Cs)]
+        Λ_inv = pinv.(Λ_vec[1:end-1])
+        V_vec = Λ_vec[2:end] .* Λ_inv #vector of intermediate maps
+        return Λ_vec, V_vec
+    else
+        Λ_vec = [calculate_ρ_using_G(Cs[i], qS, qA) for i in 2:length(Cs)]
+        Λ_inv = pinv.(Λ_vec[1:end-1])
+        V_vec = Λ_vec[2:end] .* Λ_inv #vector of intermediate maps
+        L_vec = ((Λ_vec[2:end]-Λ_vec[1:end-1])./dt) .* Λ_inv #vector of generators
+        return Λ_vec, V_vec, L_vec
+    end
 end
 
 function calculate_BLP(P; plotting=false)
-    (;spec_fun, Γ_L, Γ_R, β_R, μ_R, D_L, D_R, dt, N_L) = P
+    (;Γ_R, β_R, μ_R, dt, N_L, T) = P
     
     qS = 2*N_L + 2 
 
@@ -530,9 +463,11 @@ function calculate_BLP(P; plotting=false)
     J_R = spectral_function(P, "R")
     
     H = H_tot(J_L, J_R, P)
-    C0_e, C0_f, _ = prepare_corrs(P)
-    Cs_e = evolve_corrs(C0_e, H, P)
-    Cs_f = evolve_corrs(C0_f, H, P)
+    C0_e = prepare_corrs(P)
+    C0_f = prepare_corrs(P)
+    C0_f[qS,qS] = 1.0
+    Cs_e = evolve_corrs(C0_e, H, P, T)
+    Cs_f = evolve_corrs(C0_f, H, P, T)
 
     rho1 = [real(C[qS,qS]) for C in Cs_f]
     rho2 = [real(C[qS,qS]) for C in Cs_e]
@@ -571,9 +506,10 @@ end
 
 #test function
 function calculate_RHP(P; plotting=false)
-    (;dt, N_L) = P
+    (;dt, T, N_L) = P
     
-    Λ_vec, V_vec, L_vec = extract_maps(P)
+    C0 = prepare_corrs(P)
+    Λ_vec, V_vec, L_vec = extract_maps(P, C0, T)
     
     times = [i*dt for i in 1:length(V_vec)]
     rhp_accum = zeros(length(V_vec))
@@ -640,11 +576,47 @@ function calculate_RHP(P; plotting=false)
     return final_rhp
 end
 
-function calculate_mpemba(P, mem_time; plotting=false)
-    """Calculates non-Markovian Mpemba state based on a given memory time"""
-    (; dt, N_L) = P
+function calculate_TDFP(P; plotting=false)
+    (; dt, T, N_L) = P
     
-    Λ_vec, V_vec, L_vec = extract_maps(P)
+    C0 = prepare_corrs(P)
+    Λ_vec, V_vec = extract_maps(P, C0, T, num=2)
+    times = [i*dt for i in 1:length(Λ_vec)]
+    idx = argmin(abs.(times .- mem_time)) #memory time index
+
+    V_TDFP = zeros(length(times) - 1)
+    for (i,V) in enumerate(V_vec)
+        F = eigen(V)
+        idx = argmin(abs.(abs.(F.values) .- 1.0)) #eigenvalue closest to 1
+        ρ_TDFP = F.vectors[:, idx] #corresponding eigenvector
+        V_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
+    end
+    convergence = []
+    mem_idx = findfirst(i -> extrema(V_vec[i-19:i]) )
+    if plotting == true
+        Λ_TDFP = zeros(length(times))
+        for (i,Λ) in enumerate(Λ_vec)
+            F = eigen(Λ)
+            idx = argmin(abs.(abs.(F.values) .- 1.0)) #eigenvalue closest to 1
+            ρ_TDFP = F.vectors[:, idx] #corresponding eigenvector
+            Λ_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
+        end
+        p = plot(times, Λ_TDFP, xlabel="time", ylabel="\$p_{TDFP}\$", label="\$\\Lambda\$", lw=2, dpi=200)
+        plot!(p, times[1:end-1], V_TDFP, label="\$\\mathcal{V}\$", lw=2)
+        plot!(p, times[1:end-1], L_TDFP, label="\$\\mathcal{L}\$", linestyle=:dot, lw=2)
+        display(p)
+    end
+    
+    
+
+end
+
+function calculate_Mpemba(P, mem_time; plotting=false)
+    """Calculates non-Markovian Mpemba state based on a given memory time"""
+    (; dt, T, N_L) = P
+    
+    C0 = prepare_corrs(P)
+    Λ_vec, V_vec, L_vec = extract_maps(P, C0, T)
     times = [i*dt for i in 1:length(Λ_vec)]
     idx = argmin(abs.(times .- mem_time)) #memory time index
 
@@ -659,37 +631,99 @@ function calculate_mpemba(P, mem_time; plotting=false)
     ρ_f = ρ_f / tr(reshape(ρ_f, 2, 2))
     pf = real(ρ_f[end]) #population of Mpemba state
     println("Mpemba state is $pf, Steady state is $pinf.")
-    if plotting==true
-         Λ_TDFP = zeros(length(times))
-         V_TDFP = zeros(length(times)-1)
-         L_TDFP = zeros(length(times)-1)
-        for (i,Λ) in enumerate(Λ_vec)
-            F = eigen(Λ)
-            idx = argmin(abs.(abs.(F.values) .- 1.0)) #eigenvalue closest to 1
-            ρ_TDFP = F.vectors[:, idx] #corresponding eigenvector
-            Λ_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
-        end
-        
-        for (i,V) in enumerate(V_vec)
-            F = eigen(V)
-            idx = argmin(abs.(abs.(F.values) .- 1.0)) #eigenvalue closest to 1
-            ρ_TDFP = F.vectors[:, idx] #corresponding eigenvector
-            V_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
-        end
-
-        for (i,L) in enumerate(L_vec)
-            F = eigen(L)
-            idx = argmin(abs.(abs.(F.values))) #eigenvalue closest to 0
-            ρ_TDFP = F.vectors[:, idx] #corresponding eigenvector
-            L_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
-        end
-        p = plot(times, Λ_TDFP, xlabel="time", ylabel="\$p_{TDFP}\$", label="\$\\Lambda\$", lw=2, dpi=200)
-        plot!(p, times[1:end-1], V_TDFP, label="\$\\mathcal{V}\$", lw=2)
-        plot!(p, times[1:end-1], L_TDFP, label="\$\\mathcal{L}\$", linestyle=:dot, lw=2)
-        display(p)
-    end
 
     return pf, pinf
 end
 
+function calculate_oCP(P; plotting=false)
+    (;dt, T, N_L) = P
+    qA = 2*N_L + 1
+    qS = 2*N_L + 2
+
+    J_L = spectral_function(P, "L")
+    J_R = spectral_function(P, "R")
+    C0 = prepare_corrs(P)
+    
+    # Use the same exact initialization as extract_maps
+    C0[qA:qS, qA:qS] .= 0.5 
+    
+    H = H_tot(J_L, J_R, P)
+    Cs = evolve_corrs(C0, H, P, T)[2:end]
+    Λ_vec = extract_maps(P, C0, T, num=1)
+    
+    times = [i*dt for i in 1:length(Cs)]
+    len = length(times)
+    tracedist = zeros(len, len)
+    @showprogress for i in 1:len-1
+        Λs = Λ_vec[i]
+        C = Cs[i]
+        s = times[i]
+        
+        # C is cleanly copied and decoupled inside the updated extract_maps
+        Φ_vec = extract_maps(P, C, (T-s), num=1)
+        
+        for j in 1:length(Φ_vec)
+            # Match the correct future time step in the overarching Λ_vec
+            Λt = Λ_vec[i + j]
+            Φ = Φ_vec[j] 
+            
+            composite_map = Φ * Λs
+            
+            tracedist[i, i + j] = 0.5 * sum(svdvals(Λt - composite_map))#trace distance between maps
+        end
+    end
+
+    if plotting==true
+        p = heatmap(times, times, tracedist, xlabel="t", ylabel="s",
+                    title="\$\\frac{1}{2}||\\Lambda(t,0) - \\Phi(t,s)\\Lambda(s,0)||_1\$", dpi=400)
+        c = contours(times, times, tracedist, 3)
+        for cl in levels(c)
+            for line in lines(cl)
+                xs, ys = coordinates(line)
+                plot!(p, ys, xs, c=:white, label="")
+            end
+        end
+        display(p)
+    end
+
+    return Matrix(tracedist), times
+
+end
+
+function calculate_iCP(P; plotting=false)
+    (;dt, T, N_L) = P
+    
+    C0 = prepare_corrs(P)
+    Λ_vec = extract_maps(P, C0, T, num=1)
+    times = [i*dt for i in 1:length(Λ_vec)]
+    len = length(times)
+    tracenorm = zeros(len, len)
+    @showprogress for i in 1:len-1
+        Λs = Λ_vec[i]
+        Λs_inv = pinv(Λs)
+        for j in 1:len-i
+            # Match the correct future time step in the overarching Λ_vec
+            Λt = Λ_vec[i + j]
+            Λts = Λt * Λs_inv 
+            ρ_choi = Λ_to_ρ(Λts, 1)
+            
+            tracenorm[i, i + j] = sum(svdvals(ρ_choi)) - 1.0
+        end
+    end
+
+    if plotting==true
+        p = heatmap(times, times, tracenorm, xlabel="t", ylabel="s",
+                    title="\$\\frac{1}{2}||\\Lambda(t,0) - \\Lambda(t,s)\\Lambda(s,0)||_1\$", dpi=400)
+        c = contours(times, times, tracenorm, 3)
+        for cl in levels(c)
+            for line in lines(cl)
+                xs, ys = coordinates(line)
+                plot!(p, ys, xs, c=:white, label="")
+            end
+        end
+        display(p)
+    end
+
+    return Matrix(tracenorm), times
+end
 end
