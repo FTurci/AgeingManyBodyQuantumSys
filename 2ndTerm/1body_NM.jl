@@ -5,7 +5,8 @@ export base_params, set_P, spectral_function, thermofield_double,
        chain_map, H_bath, H_tot, prepare_corrs, evolve_corrs, 
        spin_operators, matrix_operators, matrix_log, map_to_principal, 
        ρ_to_Λ, Λ_to_ρ, calculate_ρ_using_G, extract_maps, calculate_BLP, calculate_RHP,
-       calculate_Mpemba, calculate_TDFP, calculate_oCP, calculate_iCP
+       calculate_Mpemba, calculate_TDFP, calculate_oCP, calculate_iCP, calculate_Signalling,
+       extract_process_tensor, calculate_PT_oCP
 
 using LinearAlgebra
 using PolyChaos
@@ -245,7 +246,6 @@ end
 
 function evolve_corrs(C0, H, P, T)
     (;dt) = P
-    Cs = Vector{Array{ComplexF64}}(undef, 0)
     C_curr = Matrix(C0)
     H = Matrix(H)
     
@@ -385,13 +385,14 @@ function calculate_ρ_using_G(corr_full, qS, qA)
     G = transpose(corr_full[idxs, idxs])
     Id = Diagonal(ones(Float64, 2*Ns))    
     
+    """
     # --- Added Eigenvalue Regularization ---
     F_G = eigen(G)
     # Clamp the real parts to avoid exactly 0.0 or 1.0
     reg_evals = [clamp(real(v), 1e-12, 1.0 - 1e-12) + im*imag(v) for v in F_G.values]
     G = F_G.vectors * Diagonal(reg_evals) * inv(F_G.vectors)
     # ---------------------------------------
-
+    """
     α = matrix_log(G * pinv(Id - G))
 
     A = complex(zeros(2^(2*Ns), 2^(2*Ns)))
@@ -435,18 +436,18 @@ function extract_maps(P, C0_input, T; num=3)
     J_R = spectral_function(P, "R")
     H = H_tot(J_L, J_R, P)
     
-    Cs = evolve_corrs(C0, H, P, T)
+    Cs = evolve_corrs(C0, H, P, T)[2:end]
 
     if num==1
-        Λ_vec = [calculate_ρ_using_G(Cs[i], qS, qA) for i in 2:length(Cs)]
+        Λ_vec = [calculate_ρ_using_G(Cs[i], qS, qA) for i in 1:length(Cs)]
         return Λ_vec
     elseif num==2 
-        Λ_vec = [calculate_ρ_using_G(Cs, qS, qA) for i in 2:length(Cs)]
+        Λ_vec = [calculate_ρ_using_G(Cs[i], qS, qA) for i in 1:length(Cs)]
         Λ_inv = pinv.(Λ_vec[1:end-1])
         V_vec = Λ_vec[2:end] .* Λ_inv #vector of intermediate maps
         return Λ_vec, V_vec
     else
-        Λ_vec = [calculate_ρ_using_G(Cs[i], qS, qA) for i in 2:length(Cs)]
+        Λ_vec = [calculate_ρ_using_G(Cs[i], qS, qA) for i in 1:length(Cs)]
         Λ_inv = pinv.(Λ_vec[1:end-1])
         V_vec = Λ_vec[2:end] .* Λ_inv #vector of intermediate maps
         L_vec = ((Λ_vec[2:end]-Λ_vec[1:end-1])./dt) .* Λ_inv #vector of generators
@@ -582,7 +583,6 @@ function calculate_TDFP(P; plotting=false)
     C0 = prepare_corrs(P)
     Λ_vec, V_vec = extract_maps(P, C0, T, num=2)
     times = [i*dt for i in 1:length(Λ_vec)]
-    idx = argmin(abs.(times .- mem_time)) #memory time index
 
     V_TDFP = zeros(length(times) - 1)
     for (i,V) in enumerate(V_vec)
@@ -591,8 +591,9 @@ function calculate_TDFP(P; plotting=false)
         ρ_TDFP = F.vectors[:, idx] #corresponding eigenvector
         V_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
     end
-    convergence = []
-    mem_idx = findfirst(i -> extrema(V_vec[i-19:i]) )
+    extremes = [extrema(V_TDFP[i-19:i]) for i in 20:(length(V_TDFP))]
+    mem_idx = findfirst(i -> extremes[i][2] - extremes[i][1] < 1e-3, 1:length(extremes)) 
+    mem_time = (mem_idx == nothing) ? NaN : times[mem_idx+19] 
     if plotting == true
         Λ_TDFP = zeros(length(times))
         for (i,Λ) in enumerate(Λ_vec)
@@ -603,11 +604,11 @@ function calculate_TDFP(P; plotting=false)
         end
         p = plot(times, Λ_TDFP, xlabel="time", ylabel="\$p_{TDFP}\$", label="\$\\Lambda\$", lw=2, dpi=200)
         plot!(p, times[1:end-1], V_TDFP, label="\$\\mathcal{V}\$", lw=2)
-        plot!(p, times[1:end-1], L_TDFP, label="\$\\mathcal{L}\$", linestyle=:dot, lw=2)
+        vline!(p, [mem_time], linestyle=:dot, c=:black, label="\$\\tau^\\mathcal{L}_m\$")
         display(p)
     end
     
-    
+    return mem_time, mem_idx
 
 end
 
@@ -644,39 +645,40 @@ function calculate_oCP(P; plotting=false)
     J_R = spectral_function(P, "R")
     C0 = prepare_corrs(P)
     
-    # Use the same exact initialization as extract_maps
     C0[qA:qS, qA:qS] .= 0.5 
     
     H = H_tot(J_L, J_R, P)
     Cs = evolve_corrs(C0, H, P, T)[2:end]
-    Λ_vec = extract_maps(P, C0, T, num=1)
+    Λ_vec = extract_maps(P, C0, 2*T, num=1)
     
     times = [i*dt for i in 1:length(Cs)]
     len = length(times)
     tracedist = zeros(len, len)
-    @showprogress for i in 1:len-1
+    CPviolation = zeros(len, len)
+    @showprogress for i in 1:len
         Λs = Λ_vec[i]
         C = Cs[i]
-        s = times[i]
+        # C is copied and decoupled inside extract_maps
+        Φ_vec = extract_maps(P, C, T, num=1)
         
-        # C is cleanly copied and decoupled inside the updated extract_maps
-        Φ_vec = extract_maps(P, C, (T-s), num=1)
-        
-        for j in 1:length(Φ_vec)
+        for j in 1:len
             # Match the correct future time step in the overarching Λ_vec
             Λt = Λ_vec[i + j]
             Φ = Φ_vec[j] 
             
             composite_map = Φ * Λs
-            
-            tracedist[i, i + j] = 0.5 * sum(svdvals(Λt - composite_map))#trace distance between maps
+            ρ_Λ = Λ_to_ρ(Λt, 1)
+            ρ_ΦΛ = Λ_to_ρ(composite_map, 1)
+            tracedist[j, i] = 0.5 * sum(svdvals(ρ_Λ - ρ_ΦΛ))#trace distance between choi states
+            ρ_Φ = Λ_to_ρ(Φ, 1)
+            CPviolation[j, i] = sum(svdvals(ρ_Φ)) - 1.0 #trace norm of choi state for Phi
         end
     end
 
     if plotting==true
-        p = heatmap(times, times, tracedist, xlabel="t", ylabel="s",
-                    title="\$\\frac{1}{2}||\\Lambda(t,0) - \\Phi(t,s)\\Lambda(s,0)||_1\$", dpi=400)
-        c = contours(times, times, tracedist, 3)
+        p = heatmap(times, times, tracedist, xlabel="\$s\$", ylabel="\$t-s\$",
+                    title="\$\\frac{1}{2}||\\rho_{t:0} - \\rho_{t:s:0}||_1\$", dpi=400)
+        c = contours(times, times, tracedist, 6)
         for cl in levels(c)
             for line in lines(cl)
                 xs, ys = coordinates(line)
@@ -684,9 +686,13 @@ function calculate_oCP(P; plotting=false)
             end
         end
         display(p)
+
+        p = heatmap(times, times, CPviolation, xlabel="\$s\$", ylabel="\$t-s\$",
+                    title="\$||\\rho_{t:s}|| - 1\$", dpi=400)
+        display(p)
     end
 
-    return Matrix(tracedist), times
+    return Matrix(tracedist), Matrix(CPviolation), times
 
 end
 
@@ -713,7 +719,7 @@ function calculate_iCP(P; plotting=false)
 
     if plotting==true
         p = heatmap(times, times, tracenorm, xlabel="t", ylabel="s",
-                    title="\$\\frac{1}{2}||\\Lambda(t,0) - \\Lambda(t,s)\\Lambda(s,0)||_1\$", dpi=400)
+                    title="\$||\\mathhbb{I}\\otimes\\Lambda(t,s)P^+||_1\$", dpi=400)
         c = contours(times, times, tracenorm, 3)
         for cl in levels(c)
             for line in lines(cl)
@@ -726,4 +732,258 @@ function calculate_iCP(P; plotting=false)
 
     return Matrix(tracenorm), times
 end
+
+function calculate_Signalling(P; plotting=false)
+    (;dt, T, N_L) = P
+    qA = 2*N_L + 1
+    qS = 2*N_L + 2
+
+    J_L = spectral_function(P, "L")
+    J_R = spectral_function(P, "R")
+    H = H_tot(J_L, J_R, P)
+
+    C0_e = prepare_corrs(P) #empty initial state
+    C0_e[qS,qS] = 0.0 
+    C0_f = prepare_corrs(P) #filled initial state
+    C0_f[qS,qS] = 1.0 
+
+    Cs_e = evolve_corrs(C0_e, H, P, T)[2:end]
+    Cs_f = evolve_corrs(C0_f, H, P, T)[2:end]
+    
+    times = collect(dt:dt:T)
+    len = length(times)
+    tracedist = zeros(len, len)
+    @showprogress for i in 1:len
+        C_e = Cs_e[i]
+        C_f = Cs_f[i]
+        # C is copied and decoupled inside extract_maps
+        Φ_vec_e = extract_maps(P, C_e, T, num=1)
+        Φ_vec_f = extract_maps(P, C_f, T, num=1)
+        for j in 1:len
+            Φ_e = Φ_vec_e[j]
+            Φ_f = Φ_vec_f[j]
+
+            ρ_e = Λ_to_ρ(Φ_e, 1)
+            ρ_f = Λ_to_ρ(Φ_f, 1)
+            tracedist[j, i] = 0.5 * sum(svdvals(ρ_f - ρ_e))#trace distance between choi states
+        end
+    end
+
+    if plotting==true
+        p = heatmap(times, times, tracedist, xlabel="\$s\$", ylabel="\$t-s\$",
+                    title="\$\\frac{1}{2}||L_f (t,s) - L_e (t,s)||\$", dpi=400)
+        c = contours(times, times, tracedist, 3)
+        for cl in levels(c)
+            for line in lines(cl)
+                xs, ys = coordinates(line)
+                plot!(p, ys, xs, c=:white, label="")
+            end
+        end
+        display(p)
+    end
+
+    return Matrix(tracedist), times
+
+end
+########################################
+"""---Gemini generated code below---"""
+########################################
+function extract_process_tensor(P, C0_input, s_time, t_time)
+    (;dt, N_L, N_R) = P
+    
+    # Calculate discrete steps
+    s_steps = Int(round(s_time / dt))
+    t_steps = Int(round((t_time - s_time) / dt))
+    
+    # Base indices
+    N_base = 2*N_L + 2*N_R + 2
+    qA = 2*N_L + 1
+    qS = 2*N_L + 2
+    
+    # Extended matrix indices for the Process Tensor modes
+    # We add two modes: S_minus (to store the state at s) and A_s (new ancilla at s)
+    N_tot = N_base + 2
+    idx_S_minus = N_base + 1
+    idx_As = N_base + 2
+    
+    # 1. Initialize Extended Correlation Matrix
+    C_ext = zeros(ComplexF64, N_tot, N_tot)
+    C_ext[1:N_base, 1:N_base] = copy(C0_input)
+    
+    # Prepare initial CJ state at time 0
+    C_ext[qA:qS, qA:qS] .= 0.5
+    
+    # Initialize Extended Hamiltonian
+    J_L = spectral_function(P, "L")
+    J_R = spectral_function(P, "R")
+    H_base = H_tot(J_L, J_R, P)
+    
+    H_ext = zeros(ComplexF64, N_tot, N_tot)
+    H_ext[1:N_base, 1:N_base] = H_base
+    
+    U_ext = exp(-im * dt * H_ext)
+    U_ext_dag = U_ext'
+    
+    # 2. Evolve from 0 to s
+    for _ in 1:s_steps
+        C_ext = U_ext * C_ext * U_ext_dag
+    end
+    
+    # 3. Intervention at time s
+    # Swap the current system state into the memory slot (s-)
+    C_ext[idx_S_minus, :] = C_ext[qS, :]
+    C_ext[:, idx_S_minus] = C_ext[:, qS]
+    C_ext[idx_S_minus, idx_S_minus] = C_ext[qS, qS]
+    
+    # Decouple the physical system mode
+    C_ext[qS, :] .= 0.0
+    C_ext[:, qS] .= 0.0
+    
+    # Prepare fresh CJ state between the new ancilla (s+) and the physical system
+    C_ext[idx_As, idx_As] = 0.5
+    C_ext[qS, qS] = 0.5
+    C_ext[idx_As, qS] = 0.5
+    C_ext[qS, idx_As] = 0.5
+    
+    # 4. Evolve from s to t
+    for _ in 1:t_steps
+        C_ext = U_ext * C_ext * U_ext_dag
+    end
+    
+    # 5. Extract the 4-mode Process Tensor block
+    # Order: A_r (0), S_minus (s-), A_s (s+), S_curr (t)
+    pt_indices = [qA, idx_S_minus, idx_As, qS]
+    G_PT = transpose(C_ext[pt_indices, pt_indices])
+    
+    # Convert to Many-Body Choi State
+    T_choi = calculate_PT_choi_using_G(G_PT, 4)
+    
+    return 4.0 * T_choi #normalization
+end
+
+function calculate_PT_choi_using_G(G, num_modes)
+    Id = Diagonal(ones(Float64, num_modes))
+    
+    """
+    # Eigenvalue Regularization
+    F_G = eigen(G_mat)
+    reg_evals = [clamp(real(v), 1e-12, 1.0 - 1e-12) + im*imag(v) for v in F_G.values]
+    G_reg = F_G.vectors * Diagonal(reg_evals) * inv(F_G.vectors)
+    """
+
+    α = matrix_log(G * pinv(Id - G))
+
+    A = complex(zeros(2^num_modes, 2^num_modes))
+    cdag_mat, c_mat = matrix_operators(num_modes)
+    _, Sp, Sm, _ = spin_operators(num_modes)
+    
+    for (i, creator_i) in enumerate(cdag_mat)
+        for (j, annihilator_j) in enumerate(c_mat)
+            corr_op = Matrix(creator_i) * Matrix(annihilator_j)
+            A += α[i, j] * corr_op
+        end
+    end
+
+    ρ_choi = det(Id - G) * exp(A)
+
+    # Particle-Hole transform must be applied to BOTH ancillas
+    # Ancillas are at index 1 (A_r) and index 3 (A_s)
+    PH_gate = (Sp[1] + Sm[1]) * (Sp[3] + Sm[3]) 
+    ρ_choi = PH_gate * ρ_choi * PH_gate'
+    
+    return ρ_choi
+end
+
+function partial_trace(ρ::Matrix{ComplexF64}, keep_modes::Vector{Int}, dims::Vector{Int})
+    N = length(dims)
+    
+    # Map standard Kronecker modes (1=slowest) to Julia column-major tensor dimensions (1=fastest)
+    tensor_keep = sort([N - m + 1 for m in keep_modes])
+    tensor_drop = sort([N - m + 1 for m in setdiff(1:N, keep_modes)])
+    
+    # Reverse dims to match the inverted tensor dimensions
+    rev_dims = reverse(dims)
+    
+    # Reshape into a 2N-dimensional tensor for bra and ket indices
+    tensor_dims = Tuple(vcat(rev_dims, rev_dims))
+    ρ_tensor = reshape(ρ, tensor_dims)
+    
+    # Permute the kept modes to the front
+    perm = vcat(tensor_keep, tensor_keep .+ N, tensor_drop, tensor_drop .+ N)
+    ρ_perm = permutedims(ρ_tensor, perm)
+    
+    # Flatten into a block matrix separating kept and dropped Hilbert spaces
+    dim_keep = prod(rev_dims[tensor_keep])
+    dim_drop = prod(rev_dims[tensor_drop])
+    ρ_grouped = reshape(ρ_perm, (dim_keep, dim_keep, dim_drop, dim_drop))
+    
+    # Perform the trace over the dropped subsystem
+    ρ_out = zeros(ComplexF64, dim_keep, dim_keep)
+    for i in 1:dim_drop
+        ρ_out += ρ_grouped[:, :, i, i]
+    end
+    
+    return ρ_out
+end
+
+function calculate_PT_oCP(T_choi::Matrix{ComplexF64})
+    dims = [2, 2, 2, 2]
+    d = 2 
+
+    # -------------------------------------------------------------------
+    # Step 1: Extract Intermediate Choi States
+    # -------------------------------------------------------------------
+    # L_{t:s+} is obtained by tracing out r and s- (Modes 1 and 2) [cite: 131]
+    L_ts = partial_trace(T_choi, [3, 4], dims) ./ d
+    
+    # L_{s-:r} is obtained by tracing out s+ and t (Modes 3 and 4) [cite: 131]
+    L_sr = partial_trace(T_choi, [1, 2], dims) ./ d
+
+    # -------------------------------------------------------------------
+    # Step 2: Measure Conditional Signalling 
+    # -------------------------------------------------------------------
+    # Tracing out S_minus (Mode 2) yields the marginal T [cite: 118]
+    T_marg = partial_trace(T_choi, [1, 3, 4], dims)
+    
+    # The requirement is satisfied iff tr_{s_} T = I_r ⊗ L_{t:s+} [cite: 118]
+    Ideal_T_marg = kron(Matrix(I, 2, 2), L_ts)
+    
+    N_signalling = 0.5 * sum(svdvals(T_marg - Ideal_T_marg))
+    """
+    # -------------------------------------------------------------------
+    # Step 3: Extract the Actual Channel L_{t:r}
+    # -------------------------------------------------------------------
+    # The do-nothing operation corresponds to the unnormalized maximally 
+    # entangled state φ^+_{s+s-} [cite: 122]
+    phi_plus = complex(zeros(4, 4))
+    phi_plus[1, 1] = 1.0; phi_plus[1, 4] = 1.0; 
+    phi_plus[4, 1] = 1.0; phi_plus[4, 4] = 1.0;
+    
+    # L_{t:r} is obtained by contracting T with φ^+_{s+s-} [cite: 123]
+    # Operator to apply: I_r ⊗ φ^+ ⊗ I_t
+    I_phi_I = kron(Matrix(I, 2, 2), kron(phi_plus, Matrix(I, 2, 2)))
+    T_contracted = I_phi_I * T_choi
+    
+    # Trace out the contracted intermediate modes (2 and 3)
+    L_tr_actual = partial_trace(T_contracted, [1, 4], dims)
+
+    # -------------------------------------------------------------------
+    # Step 4: Concatenate Intermediate Maps & Measure Divisibility
+    # -------------------------------------------------------------------
+    # Using your existing functions to map Choi states to Dynamical Maps
+    Λ_ts = ρ_to_Λ(L_ts ./ d, 1)
+    Λ_sr = ρ_to_Λ(L_sr ./ d, 1)
+    
+    # Concatenation of the two maps [cite: 133]
+    Λ_concatenated = Λ_ts * Λ_sr
+    
+    # Map back to Choi state and multiply by d to match actual channel's trace
+    L_tr_concatenated = d .* Λ_to_ρ(Λ_concatenated, 1)
+
+    # Violation of Eq. 8 is the distance between actual and concatenated evolution
+    N_divisibility = 0.5 * sum(svdvals(L_tr_actual - L_tr_concatenated))
+    """
+    return N_signalling#, N_divisibility
+end
+
 end
