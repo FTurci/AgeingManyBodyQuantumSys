@@ -574,7 +574,7 @@ function calculate_RHP(P; plotting=false)
         display(p_combined)
     end
 
-    return final_rhp
+    return rhp_step, rhp_accum
 end
 
 function calculate_TDFP(P; plotting=false)
@@ -603,12 +603,12 @@ function calculate_TDFP(P; plotting=false)
             Λ_TDFP[i] = real(ρ_TDFP[end]) / real(sum(ρ_TDFP)) #population of the time-dependent fixed point
         end
         p = plot(times, Λ_TDFP, xlabel="time", ylabel="\$p_{TDFP}\$", label="\$\\Lambda\$", lw=2, dpi=200)
-        plot!(p, times[1:end-1], V_TDFP, label="\$\\mathcal{V}\$", lw=2)
+        plot!(p, times[1:end-1], V_TDFP, label="\$\\mathcal{L}\$", lw=2)
         vline!(p, [mem_time], linestyle=:dot, c=:black, label="\$\\tau^\\mathcal{L}_m\$")
         display(p)
     end
     
-    return mem_time, mem_idx
+    return mem_time, mem_idx, V_TDFP
 
 end
 
