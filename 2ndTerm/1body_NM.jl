@@ -617,7 +617,7 @@ function calculate_Mpemba(P, mem_time; plotting=false)
     (; dt, T, N_L) = P
     
     C0 = prepare_corrs(P)
-    Λ_vec, V_vec, L_vec = extract_maps(P, C0, T)
+    Λ_vec, V_vec = extract_maps(P, C0, T, num=2)
     times = [i*dt for i in 1:length(Λ_vec)]
     idx = argmin(abs.(times .- mem_time)) #memory time index
 
@@ -763,9 +763,8 @@ function calculate_Signalling(P; plotting=false)
             Φ_e = Φ_vec_e[j]
             Φ_f = Φ_vec_f[j]
 
-            ρ_e = Λ_to_ρ(Φ_e, 1)
-            ρ_f = Λ_to_ρ(Φ_f, 1)
-            tracedist[j, i] = 0.5 * sum(svdvals(ρ_f - ρ_e))#trace distance between choi states
+            
+            tracedist[j, i] = 0.5 * sum(svdvals(Φ_f - Φ_e))#trace distance between choi states
         end
     end
 
@@ -785,35 +784,30 @@ function calculate_Signalling(P; plotting=false)
     return Matrix(tracedist), times
 
 end
+
 ########################################
-"""---Gemini generated code below---"""
 ########################################
 function extract_process_tensor(P, C0_input, s_time, t_time)
     (;dt, N_L, N_R) = P
     
-    # Calculate discrete steps
     s_steps = Int(round(s_time / dt))
     t_steps = Int(round((t_time - s_time) / dt))
     
-    # Base indices
     N_base = 2*N_L + 2*N_R + 2
     qA = 2*N_L + 1
     qS = 2*N_L + 2
     
-    # Extended matrix indices for the Process Tensor modes
-    # We add two modes: S_minus (to store the state at s) and A_s (new ancilla at s)
     N_tot = N_base + 2
     idx_S_minus = N_base + 1
     idx_As = N_base + 2
     
-    # 1. Initialize Extended Correlation Matrix
     C_ext = zeros(ComplexF64, N_tot, N_tot)
     C_ext[1:N_base, 1:N_base] = copy(C0_input)
-    
-    # Prepare initial CJ state at time 0
     C_ext[qA:qS, qA:qS] .= 0.5
     
-    # Initialize Extended Hamiltonian
+    # Create a parallel matrix that will NOT undergo the intervention at time s
+    C_actual = copy(C_ext)
+    
     J_L = spectral_function(P, "L")
     J_R = spectral_function(P, "R")
     H_base = H_tot(J_L, J_R, P)
@@ -827,19 +821,17 @@ function extract_process_tensor(P, C0_input, s_time, t_time)
     # 2. Evolve from 0 to s
     for _ in 1:s_steps
         C_ext = U_ext * C_ext * U_ext_dag
+        C_actual = U_ext * C_actual * U_ext_dag # Un-intervened evolution
     end
     
-    # 3. Intervention at time s
-    # Swap the current system state into the memory slot (s-)
+    # 3. Intervention at time s (applied to C_ext ONLY)
     C_ext[idx_S_minus, :] = C_ext[qS, :]
     C_ext[:, idx_S_minus] = C_ext[:, qS]
     C_ext[idx_S_minus, idx_S_minus] = C_ext[qS, qS]
     
-    # Decouple the physical system mode
     C_ext[qS, :] .= 0.0
     C_ext[:, qS] .= 0.0
     
-    # Prepare fresh CJ state between the new ancilla (s+) and the physical system
     C_ext[idx_As, idx_As] = 0.5
     C_ext[qS, qS] = 0.5
     C_ext[idx_As, qS] = 0.5
@@ -848,28 +840,21 @@ function extract_process_tensor(P, C0_input, s_time, t_time)
     # 4. Evolve from s to t
     for _ in 1:t_steps
         C_ext = U_ext * C_ext * U_ext_dag
+        C_actual = U_ext * C_actual * U_ext_dag # Continues un-intervened
     end
     
-    # 5. Extract the 4-mode Process Tensor block
-    # Order: A_r (0), S_minus (s-), A_s (s+), S_curr (t)
+    # 5. Extract the covariance matrices
     pt_indices = [qA, idx_S_minus, idx_As, qS]
     G_PT = transpose(C_ext[pt_indices, pt_indices])
     
-    # Convert to Many-Body Choi State
-    T_choi = calculate_PT_choi_using_G(G_PT, 4)
+    actual_indices = [qA, qS]
+    G_tr_actual = transpose(C_actual[actual_indices, actual_indices])
     
-    return 4.0 * T_choi #normalization
+    return G_PT, G_tr_actual
 end
 
 function calculate_PT_choi_using_G(G, num_modes)
     Id = Diagonal(ones(Float64, num_modes))
-    
-    """
-    # Eigenvalue Regularization
-    F_G = eigen(G_mat)
-    reg_evals = [clamp(real(v), 1e-12, 1.0 - 1e-12) + im*imag(v) for v in F_G.values]
-    G_reg = F_G.vectors * Diagonal(reg_evals) * inv(F_G.vectors)
-    """
 
     α = matrix_log(G * pinv(Id - G))
 
@@ -889,6 +874,35 @@ function calculate_PT_choi_using_G(G, num_modes)
     # Particle-Hole transform must be applied to BOTH ancillas
     # Ancillas are at index 1 (A_r) and index 3 (A_s)
     PH_gate = (Sp[1] + Sm[1]) * (Sp[3] + Sm[3]) 
+    ρ_choi = PH_gate * ρ_choi * PH_gate'
+    
+    return ρ_choi
+end
+
+function calculate_PT_choi_using_G_modified(G, num_modes, ancilla_indices)
+    Id = Diagonal(ones(Float64, num_modes))
+    
+    α = matrix_log(G * pinv(Id - G))
+
+    A = complex(zeros(2^num_modes, 2^num_modes))
+    cdag_mat, c_mat = matrix_operators(num_modes)
+    _, Sp, Sm, _ = spin_operators(num_modes)
+    
+    for (i, creator_i) in enumerate(cdag_mat)
+        for (j, annihilator_j) in enumerate(c_mat)
+            corr_op = Matrix(creator_i) * Matrix(annihilator_j)
+            A += α[i, j] * corr_op
+        end
+    end
+
+    ρ_choi = det(Id - G) * exp(A)
+
+    # Dynamic Particle-Hole transform
+    PH_gate = complex(Matrix(I, 2^num_modes, 2^num_modes))
+    for idx in ancilla_indices
+        PH_gate = PH_gate * (Sp[idx] + Sm[idx])
+    end
+    
     ρ_choi = PH_gate * ρ_choi * PH_gate'
     
     return ρ_choi
@@ -926,64 +940,49 @@ function partial_trace(ρ::Matrix{ComplexF64}, keep_modes::Vector{Int}, dims::Ve
     return ρ_out
 end
 
-function calculate_PT_oCP(T_choi::Matrix{ComplexF64})
-    dims = [2, 2, 2, 2]
+function calculate_PT_oCP(G_PT::AbstractMatrix{ComplexF64}, G_tr_actual::AbstractMatrix{ComplexF64})
     d = 2 
 
     # -------------------------------------------------------------------
-    # Step 1: Extract Intermediate Choi States
+    # Step 1: Extract Intermediate Choi States via Covariance Marginals
     # -------------------------------------------------------------------
-    # L_{t:s+} is obtained by tracing out r and s- (Modes 1 and 2) [cite: 131]
-    L_ts = partial_trace(T_choi, [3, 4], dims) ./ d
+    G_ts = G_PT[[3, 4], [3, 4]]
+    L_ts = d * calculate_PT_choi_using_G_modified(G_ts, 2, [1])
     
-    # L_{s-:r} is obtained by tracing out s+ and t (Modes 3 and 4) [cite: 131]
-    L_sr = partial_trace(T_choi, [1, 2], dims) ./ d
+    G_sr = G_PT[[1, 2], [1, 2]]
+    L_sr = d * calculate_PT_choi_using_G_modified(G_sr, 2, [1])
 
     # -------------------------------------------------------------------
     # Step 2: Measure Conditional Signalling 
     # -------------------------------------------------------------------
-    # Tracing out S_minus (Mode 2) yields the marginal T [cite: 118]
-    T_marg = partial_trace(T_choi, [1, 3, 4], dims)
+    G_marg = G_PT[[1, 3, 4], [1, 3, 4]]
+    T_marg = 4.0 * calculate_PT_choi_using_G_modified(G_marg, 3, [1, 2])
     
-    # The requirement is satisfied iff tr_{s_} T = I_r ⊗ L_{t:s+} [cite: 118]
     Ideal_T_marg = kron(Matrix(I, 2, 2), L_ts)
-    
     N_signalling = 0.5 * sum(svdvals(T_marg - Ideal_T_marg))
-    """
+    
     # -------------------------------------------------------------------
     # Step 3: Extract the Actual Channel L_{t:r}
     # -------------------------------------------------------------------
-    # The do-nothing operation corresponds to the unnormalized maximally 
-    # entangled state φ^+_{s+s-} [cite: 122]
-    phi_plus = complex(zeros(4, 4))
-    phi_plus[1, 1] = 1.0; phi_plus[1, 4] = 1.0; 
-    phi_plus[4, 1] = 1.0; phi_plus[4, 4] = 1.0;
-    
-    # L_{t:r} is obtained by contracting T with φ^+_{s+s-} [cite: 123]
-    # Operator to apply: I_r ⊗ φ^+ ⊗ I_t
-    I_phi_I = kron(Matrix(I, 2, 2), kron(phi_plus, Matrix(I, 2, 2)))
-    T_contracted = I_phi_I * T_choi
-    
-    # Trace out the contracted intermediate modes (2 and 3)
-    L_tr_actual = partial_trace(T_contracted, [1, 4], dims)
+    # We bypass the 16x16 tensor contraction by generating the Choi state 
+    # directly from the un-intervened covariance matrix.
+    L_tr_actual = d * calculate_PT_choi_using_G_modified(G_tr_actual, 2, [1])
 
     # -------------------------------------------------------------------
     # Step 4: Concatenate Intermediate Maps & Measure Divisibility
     # -------------------------------------------------------------------
-    # Using your existing functions to map Choi states to Dynamical Maps
     Λ_ts = ρ_to_Λ(L_ts ./ d, 1)
     Λ_sr = ρ_to_Λ(L_sr ./ d, 1)
     
-    # Concatenation of the two maps [cite: 133]
     Λ_concatenated = Λ_ts * Λ_sr
     
-    # Map back to Choi state and multiply by d to match actual channel's trace
+    # Map back to Choi state and multiply by d
     L_tr_concatenated = d .* Λ_to_ρ(Λ_concatenated, 1)
 
-    # Violation of Eq. 8 is the distance between actual and concatenated evolution
+    # Calculate violation of Eq. 8 [cite: 228]
     N_divisibility = 0.5 * sum(svdvals(L_tr_actual - L_tr_concatenated))
-    """
-    return N_signalling#, N_divisibility
+    
+    return N_signalling, N_divisibility
 end
 
 end
